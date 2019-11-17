@@ -2,18 +2,14 @@
 # -*- coding: utf-8 -*-
 
 """
-Lead Win-Propensity Model
+Lead Win-customerpensity Model
 
-This model seeks to predict the propensity
-of a pro enrolling into a paid Housecall Pro
+This model seeks to predict the customerpensity
+of a customer enrolling into a subscription
 plan, given interactions with the Marketing site,
 various Marketing channels, the Sales organization,
 and event temporal dynamics.
 
-For additional info, see David Corea in Data Science
-
-@author: davidcorea
-Created on Sep 2019
 """
 
 import pandas as pd
@@ -24,13 +20,10 @@ import lightgbm as lgb
 from sklearn.metrics import confusion_matrix, classification_report, precision_recall_curve
 from sklearn.model_selection import RandomizedSearchCV
 from sklearn.model_selection import cross_val_score
-from sklearn.calibration import calibration_curve
 from skopt.space import Real, Integer
 from skopt.utils import use_named_args
 from skopt import gp_minimize
-from skopt.plots import plot_convergence
 from inspect import signature
-import matplotlib.pyplot as plt
 
 import os
 from sys import exit, exc_info, path, stdout
@@ -39,16 +32,15 @@ from datetime import datetime, date
 from json import loads,dumps
 import requests
 
-path.insert(0, '/home/deploy/core-analytics/data_sci_projects')
 import data_sci_utilities as dsu
 
-# This training scipt is likely to trigger an alarm on the playground ec2 box
-# Data Eng will want a heads up
+# This training scipt is likely to trigger an alarm for its CPU usage
+# Some folks will want a heads up
 model_training_message = {
-    "text": ":robot_face: Friendly Alert from Data Science",
+    "text": ":robot_face: Friendly Alert from David",
     "attachments": [
         {
-            "title": "A new lead scoring model is being trained",
+            "title": "A new model is being trained",
             "fields": [
                 {
                     "value": "Cross validation is a part of this process and may trigger a CPU usage alarm.\nThanks for understanding.",
@@ -62,109 +54,51 @@ model_training_message = {
 dsu.send_logs_to_slack(model_training_message)
 
 ###
-## Connect to Snowflake and fetch data
+## Connect to database and fetch data
 ###
 current_machine = dsu.identify_machine()
-mysql_creds, snowflake_creds, aws_creds, snowflake_temp_dir = dsu.get_creds(current_machine)
+mysql_creds, database_creds, aws_creds, database_temp_dir = dsu.get_creds(current_machine)
 
 # Important for this list to be globally acccessible in this script
-feature_column_names = ['pro_email',
-                        'industry',
-                        'most_recent_marketing_channel',
-                        'state',
-                        'ltv',
-                        'org_size',
-                        'num_housecall_pro_site_pageviews',
-                        'num_employees_in_org',
-                        'num_pros_to_login',
-                        'num_housecall_pro_site_logins',
-                        'days_since_trial_expired',
-                        'days_since_web_form_submission',
-                        'num_housecall_pro_site_logouts',
-                        'pro_connected_qbo',
-                        'num_email_opens',
-                        'num_email_sends',
-                        'num_email_unsubscribe_requests',
-                        'days_since_last_email_unsubscribe',
-                        'num_email_spam_flags',
-                        'total_calls_made_to_pro',
-                        'days_since_last_call',
-                        'days_since_last_sms',
-                        'num_connected_calls',
-                        'num_conversations',
-                        'prop_conversations',
-                        'num_hcp_reps_interacted_w_pro',
-                        'num_sms_messages_sent_to_pro',    
-                        'attended_demo',
-                        'duration_in_days_between_booking_and_attending_demo',
-                        'total_touches',
-                        'num_marketing_touches',
-                        'num_unique_marketing_channels',
-                        'num_jobs_created_first_14_days',
-                        'num_estimates_created_first_14_days', 
-                        'num_jobs_scheduled_first_14_days',
-                        'scheduled_job_amount_first_14_days',
-                        'scheduled_estimate_amount_first_14_days',
-                        'num_estimated_jobs_first_14_days',
-                        'num_inprogress_jobs_first_14_days',
-                        'inprogress_job_amount_first_14_days',
-                        'num_completed_jobs_first_14_days',
-                        'completed_job_amount_first_14_days',
-                        'num_estimates_completed_first_14_days',
-                        'completed_estimates_amount_first_14_days',
-                        'num_jobs_w_onmyway_sent_first_14_days',
-                        'num_estimates_w_onmyway_sent_first_14_days',
-                        'num_jobs_w_invoice_sent_first_14_days',
-                        'num_ios_jobs_first_14_days',
-                        'ios_job_amount_first_14_days',
-                        'num_android_jobs_first_14_days',
-                        'android_job_amount_first_14_days',
-                        'num_online_booking_jobs_first_14_days',
-                        'online_booking_job_amount_first_14_days',
-                        'yelp_job_count_first_14_days',
-                        'yelp_job_amount_first_14_days',
-                        'mu',
-                        'alpha',
-                        'theta',
-                        'booked_demo',
-                        'pro_enrolled']
+feature_column_names = ['customer_email',
+                          ...,
+                        'customer_enrolled']
 
-categorical_feature_list = ['industry', 'state', 'most_recent_marketing_channel']
+categorical_feature_list = [..., 'most_recent_marketing_channel']
 
 # Setting this as global param for easy logging / easy future tweaking 
 num_cv_folds = 7
 
-def fetch_data_from_snowflake(feature_column_names):
+def fetch_data_from_database(feature_column_names):
   """
-  Fetches dataset from Snowflake view
-  DATAZOO.mod_out.lead_scoring_features
+  Fetches dataset from database view: lead_features
   """
 
-  snowflake_view = 'DATAZOO.mod_out.lead_scoring_features'
-  sql_statement = 'SELECT * FROM {0}'.format(snowflake_view)
-  sql_results = dsu.execute_single_sql_statement('snowflake', 'select', sql_statement, conn_snow, cur_snow)
+  database_view = 'lead_features'
+  sql_statement = 'SELECT * FROM {0}'.format(database_view)
+  sql_results = dsu.execute_single_sql_statement('database', 'select', sql_statement, conn, cur)
   sql_results_df = pd.DataFrame(sql_results, columns = feature_column_names)
 
-  conn_snow.close()
+  conn.close()
   return(sql_results_df)
 
 """
-Loading data into memory from Snowflake
+Loading data into memory from database
 """
-print("Attempting to connect to Snowflake")
-conn_snow, cur_snow = dsu.connect_to_snowflake(snowflake_creds, snowflake_temp_dir)
+print("Attempting to connect to database")
+conn, cur = dsu.connect_to_database(database_creds, database_temp_dir)
 print("Successfully connected")
 
 # [f]eature [d]ata [f]rame
-print('Querying Snowflake for lead scoring features')
-fdf = fetch_data_from_snowflake(feature_column_names)
-conn_snow.close()
+print('Querying database for lead scoring features')
+fdf = fetch_data_from_database(feature_column_names)
+conn.close()
 
 
 def all_the_data_preprocessing(cat_feat_list = categorical_feature_list, fdf = fdf, feature_column_names = feature_column_names):
   """
     Method applies relevant pre processing to 
-    data retrieved from Snowflake
+    data retrieved from database
 
     When this method is completed, data is prepped
     for model development
@@ -176,7 +110,7 @@ def all_the_data_preprocessing(cat_feat_list = categorical_feature_list, fdf = f
     """
     This method identifies bottom 50% of verticals and renames them all to 'minority vertical'
     Opting to do this as these are verticals which mostly are just noise in the data.
-    A pro can enter free form text as his / her industry if he / she doesn't opt for the pre determined choices:
+    A customer can enter free form text as his / her industry if he / she doesn't opt for the pre determined choices:
       "HVAC, Carpet Cleaning, etc".
 
     This method seeks to sanitize what are likely the low volume, free form entries
@@ -208,12 +142,7 @@ def all_the_data_preprocessing(cat_feat_list = categorical_feature_list, fdf = f
 
   def replace_bottom_fifty_percent_of_channels_w_minority_string(fdf):
     """
-    This method identifies bottom 50% of marketing channels and renames them all to 'minority channel'
-    Opting to do this as many of the channel names are unsanitized and at times meaningless to even the
-    marketing team.  The channels that carry substantial lead volume are important to the marketing team,
-    and the long tail of unsanitized marketing channel names with low volume are often forgotten to even exist.
-
-    This method seeks to sanitize what are likely the low volume, forgotten, and meaningless channel names
+    This method seeks to sanitize what are likely the low volume, forgotten, and meaningless channels
     """
 
     channel_counts_df = pd.DataFrame(fdf.most_recent_marketing_channel.value_counts())
@@ -252,11 +181,10 @@ def all_the_data_preprocessing(cat_feat_list = categorical_feature_list, fdf = f
   def add_an_unseen_catch_all_to_all_categorical_fields(fdf):
     """
     During prediction time, unseen data will cause the model to error out. 
-    Production model will incorporate a simple transformation replacing new verticals with 'unseen'
+    production model will incorporate a simple transformation replacing new verticals with 'unseen'
     This method introduces 'unseen' as an observation within the data to ensure graceful model predictions,
     even on truly unseen data
 
-    Stealing this approach shamelessly from Olaf Weid
     """
 
     # Categorical features undergoing minor transform in prep for model development
@@ -268,7 +196,6 @@ def all_the_data_preprocessing(cat_feat_list = categorical_feature_list, fdf = f
     all_features_except_categorical = [fdf[none_of_the_categorical_features]]
 
     # Following step ensures model prediction will never fail on unseen categorical features
-    # Shamelessly stealing from Olaf
     cat_dict = {}
     for cat in categorical_feature_list:
       cat_dict[cat] = list(fdf[cat].unique()) + ['unseen']
@@ -292,27 +219,25 @@ def all_the_data_preprocessing(cat_feat_list = categorical_feature_list, fdf = f
     model_ready_df = model_ready_df.loc[model_ready_df.notnull().all(axis = 1)]
 
     # Target feature vector that I'm trying to predict
-    known_pro_enrollments = model_ready_df[['pro_enrolled', 'pro_email']]
-    del model_ready_df['pro_enrolled'] # shouldn't be in model ready data frame
+    known_customer_enrollments = model_ready_df[['customer_enrolled', 'customer_email']]
+    del model_ready_df['customer_enrolled'] # shouldn't be in model ready data frame
 
-    return(model_ready_df, known_pro_enrollments, cat_dict, fdf)
+    return(model_ready_df, known_customer_enrollments, cat_dict, fdf)
 
-  model_ready_df, known_pro_enrollments, cat_dict, fdf = add_an_unseen_catch_all_to_all_categorical_fields(fdf)
+  model_ready_df, known_customer_enrollments, cat_dict, fdf = add_an_unseen_catch_all_to_all_categorical_fields(fdf)
+  model_ready_df.customerp_conversations = model_ready_df.customerp_conversations.astype('float')
 
-  # Adding retroactively.  "Prop Conversations" feature gets read in as an object by default for some reason
-  model_ready_df.prop_conversations = model_ready_df.prop_conversations.astype('float')
+  return(model_ready_df, known_customer_enrollments, cat_dict, fdf) 
 
-  return(model_ready_df, known_pro_enrollments, cat_dict, fdf) 
-
-def model_param_search_and_fitting(fdf, model_ready_df, known_pro_enrollments, num_cv_folds = num_cv_folds):
+def model_param_search_and_fitting(fdf, model_ready_df, known_customer_enrollments, num_cv_folds = num_cv_folds):
   """
-  This method explores the hyper-parameter space RANOMDLY and fits
+  This method explores the hyper-parameter space ranomdly and fits
   a series of parameters to the data for gradient boosting 
 
   Result is best set params which minimize prediction error
   """
 
-  def split_data_into_train_test_and_validation(fdf = fdf, train_perc = .85, eval_perc = .15, model_ready_df = model_ready_df, known_pro_enrollments = known_pro_enrollments):
+  def split_data_into_train_test_and_validation(fdf = fdf, train_perc = .85, eval_perc = .15, model_ready_df = model_ready_df, known_customer_enrollments = known_customer_enrollments):
     """
     Training on a random 85% of the data
     Testing on remaining 15%
@@ -320,38 +245,38 @@ def model_param_search_and_fitting(fdf, model_ready_df, known_pro_enrollments, n
     """
     print('Splitting data into training, test, and validation sets')
 
-    # Following arrays define which pros are in which datasets
-    unique_pros = fdf.pro_email.unique()
-    num_pros = len(unique_pros)
-    pros_to_train_on = np.random.choice(unique_pros, 
-                                        size = int(train_perc * len(unique_pros)), 
+    # Following arrays define which customers are in which datasets
+    unique_customers = fdf.customer_email.unique()
+    num_customers = len(unique_customers)
+    customers_to_train_on = np.random.choice(unique_customers, 
+                                        size = int(train_perc * len(unique_customers)), 
                                         replace = False
                                        )
-    pros_to_test_on = list( set(unique_pros) - set(pros_to_train_on) )
-    pros_to_evaluate_model_against = np.random.choice(pros_to_train_on,
-                                                      size = int(eval_perc * len(pros_to_train_on)),
+    customers_to_test_on = list( set(unique_customers) - set(customers_to_train_on) )
+    customers_to_evaluate_model_against = np.random.choice(customers_to_train_on,
+                                                      size = int(eval_perc * len(customers_to_train_on)),
                                                       replace = False
                                                      )
-    pros_to_train_on = list( set(pros_to_train_on) - set(pros_to_evaluate_model_against) )
+    customers_to_train_on = list( set(customers_to_train_on) - set(customers_to_evaluate_model_against) )
 
-    # Following code block creates data subsets, given pro subsetted lists from above
-    data_train = model_ready_df.loc[ model_ready_df['pro_email'].isin(pros_to_train_on) ]
-    data_train__target = known_pro_enrollments.loc[known_pro_enrollments[ 'pro_email'].isin(pros_to_train_on), 'pro_enrolled']
+    # Following code block creates data subsets, given customer subsetted lists from above
+    data_train = model_ready_df.loc[ model_ready_df['customer_email'].isin(customers_to_train_on) ]
+    data_train__target = known_customer_enrollments.loc[known_customer_enrollments[ 'customer_email'].isin(customers_to_train_on), 'customer_enrolled']
 
-    data_test = model_ready_df.loc[ model_ready_df['pro_email'].isin(pros_to_test_on) ]
-    data_test__target = known_pro_enrollments.loc[known_pro_enrollments[ 'pro_email'].isin(pros_to_test_on), 'pro_enrolled']
+    data_test = model_ready_df.loc[ model_ready_df['customer_email'].isin(customers_to_test_on) ]
+    data_test__target = known_customer_enrollments.loc[known_customer_enrollments[ 'customer_email'].isin(customers_to_test_on), 'customer_enrolled']
 
-    data_eval = model_ready_df.loc[ model_ready_df['pro_email'].isin(pros_to_evaluate_model_against) ]
-    data_eval__target = known_pro_enrollments.loc[known_pro_enrollments[ 'pro_email'].isin(pros_to_evaluate_model_against), 'pro_enrolled']
+    data_eval = model_ready_df.loc[ model_ready_df['customer_email'].isin(customers_to_evaluate_model_against) ]
+    data_eval__target = known_customer_enrollments.loc[known_customer_enrollments[ 'customer_email'].isin(customers_to_evaluate_model_against), 'customer_enrolled']
 
-    del data_train['pro_email'], data_test['pro_email'], data_eval['pro_email']
+    del data_train['customer_email'], data_test['customer_email'], data_eval['customer_email']
 
     return(data_train, data_train__target, data_test, data_test__target, data_eval, data_eval__target)
 
   data_train, data_train__target, data_test, data_test__target, data_eval, data_eval__target = split_data_into_train_test_and_validation(fdf = fdf, train_perc = .85, 
                                                                                                                                           eval_perc = .15, 
                                                                                                                                           model_ready_df = model_ready_df, 
-                                                                                                                                          known_pro_enrollments = known_pro_enrollments)
+                                                                                                                                          known_customer_enrollments = known_customer_enrollments)
 
   def param_search_and_cross_validation(num_estimators = 5000, early_stopping_rounds = 15, 
                                         data_train = data_train, data_train__target = data_train__target, data_test = data_test, 
@@ -360,7 +285,7 @@ def model_param_search_and_fitting(fdf, model_ready_df, known_pro_enrollments, n
                                         num_cv_folds = num_cv_folds):
     """
       Trains a sequence of weak, boosted learners on training data
-      Stops after error no measured improvements on prediction accuracy 
+      Stops after error no measured imcustomervements on prediction accuracy 
       after n stopping rounds
 
       Best params identified using log loss function via SK Opt library
@@ -372,7 +297,7 @@ def model_param_search_and_fitting(fdf, model_ready_df, known_pro_enrollments, n
       Additional params to consider if models overfit
     
       ## Learning Params
-      early_stopping_rounds : will stop training if one metric of one validation data doesn’t improve in last early_stopping_round rounds
+      early_stopping_rounds : will stop training if one metric of one validation data doesn’t imcustomerve in last early_stopping_round rounds
 
       ## IO Params
         max_bin : (default is 255, decrease the number to mitigate over fitting.  Risks drop in accuracy)
@@ -394,7 +319,7 @@ def model_param_search_and_fitting(fdf, model_ready_df, known_pro_enrollments, n
                             importance_type = 'gain', # gain in _some metric_ when a feature is included
                             seed = 12759081, # setting this, but underlying C++ seeds may overwrite
                             num_threads = 4, # number of real CPUs available on the playground machine
-                            class_weight = 'balanced' # uses the values of y to automatically adjust weights inversely proportional to class frequencies in the input data
+                            class_weight = 'balanced' # uses the values of y to automatically adjust weights inversely customerportional to class frequencies in the input data
                             )
 
     # Per LGBM docs  https://scikit-optimize.github.io/#skopt.gp_minimize :
@@ -440,7 +365,7 @@ def model_param_search_and_fitting(fdf, model_ready_df, known_pro_enrollments, n
 
       return(cv_score_scores__mean)
 
-    # Leveraging SK Opt's Gaussian Process Bayesian Optimization `gp_minimize()` method to approximate the 'best params' to
+    # Leveraging SK Opt's Gaussian process Bayesian Optimization `gp_minimize()` method to apcustomerximate the 'best params' to
     # use in a final model
     # https://scikit-optimize.github.io/#skopt.gp_minimize
     # Method returns an OptimizeResult object.  See link above for full docs on all the data returned
@@ -449,7 +374,7 @@ def model_param_search_and_fitting(fdf, model_ready_df, known_pro_enrollments, n
     gaussian_process_results_array = gp_minimize(objective_fxn, 
                                                  hyperparameters, # list of search space dimensions
                                                  n_calls = 30, # number of calls to make against the objective function
-                                                 random_state = 215235 # seeding the optimizer for reproducible results
+                                                 random_state = 215235 # seeding the optimizer for recustomerducible results
                                                 )
 
     return(gaussian_process_results_array)
@@ -501,13 +426,13 @@ def log_cross_validation_results(gaussian_process_results_array, cross_val_resul
     Stores results for future review / analysis to local CSVs
   """
   # Local file storage directory
-  file_dir = '/home/deploy/data_sci/datasets/lead_scoring/cross_validation_results/'
-  file_name = 'cross_val_scores_w_balanced_class_weight_param_set' + str(date.today()).replace('-', '_') + '.csv'
+  file_dir = '/cross_validation_results/'
+  file_name = 'cross_val_scores_' + str(date.today()).replace('-', '_') + '.csv'
   full_path = file_dir + file_name
 
   # Log cross val results
   cross_val_results.to_csv(full_path)
-  pd.DataFrame(gaussian_process_results_array.x).to_csv(file_dir + 'best_params_w_balanced_class_weight_param_set.csv')
+  pd.DataFrame(gaussian_process_results_array.x).to_csv(file_dir + 'best_params.csv')
 
 
 def refit_best_model(gaussian_process_results_array, 
@@ -519,7 +444,7 @@ def refit_best_model(gaussian_process_results_array,
   """
   Method takes the best params as decided by the gp_minimizer() method and refits a new GBC model
   """
-  print('Refitting a new model using hyperparam permutation that minimized log-loss on predicted probabilities')
+  print('Refitting a new model using hyperparam permutation that minimized log-loss on predicted customerbabilities')
   optimizer_results = gaussian_process_results_array.x
 
   best_params = {}
@@ -538,7 +463,7 @@ def refit_best_model(gaussian_process_results_array,
                           importance_type = 'gain', # gain in prediction accuracy for a specific tree when a feature is included
                           seed = 12759081, # setting this, but underlying C++ seeds may overwrite
                           num_threads = 4, # number of real CPUs available on the playground machine
-                          class_weight = 'balanced', # uses the values of y to automatically adjust weights inversely proportional to class frequencies in the input data
+                          class_weight = 'balanced', # uses the values of y to automatically adjust weights inversely customerportional to class frequencies in the input data
                           **best_params
                           ).fit(
                                   data_train,  # data to fit a model to
@@ -556,7 +481,7 @@ def evaluate_model_and_return_performance_stats(model, data_test, data_test__tar
   Sends some basic stats to Slack
   """
   predictions_on_test_data = model.predict(data_test)
-  lead_win_probabilities = model.predict_proba(data_test)
+  lead_win_customerbabilities = model.predict_customerba(data_test)
 
   tn, fp, fn, tp = confusion_matrix(data_test__target, predictions_on_test_data).ravel()
   precision, recall, threshold = precision_recall_curve(data_test__target, predictions_on_test_data)
@@ -582,13 +507,13 @@ def evaluate_model_and_return_performance_stats(model, data_test, data_test__tar
     plt.title('Binary Precision - Recall Curve: Precision = {0}'.format( round(tp / (tp + fp), 2)  ))
 
     # Save plot locally
-    plot_filepath = '/home/deploy/data_sci/datasets/lead_scoring/model_output/precision_recall_curve' + str(date.today()).replace('-', '_') + '.png'
+    plot_filepath = '/model_output/precision_recall_curve' + str(date.today()).replace('-', '_') + '.png'
     plt.savefig(plot_filepath)
 
     print('Precision Recall plot saved locally at {0}'.format(datetime.now()))
 
     # Save plot in s3
-    s3_fullpath = 's3://housecall-datascience/model_output/precision_recall_curve' + str(date.today()).replace('-', '_') + '.png'
+    s3_fullpath = 's3://.../model_output/precision_recall_curve' + str(date.today()).replace('-', '_') + '.png'
     s3_command = 'aws s3 cp {0} {1}'.format(plot_filepath, s3_fullpath)
 
     print('Precision Recall plot saved to s3 at {0}'.format(datetime.now()))
@@ -603,13 +528,13 @@ def evaluate_model_and_return_performance_stats(model, data_test, data_test__tar
   slack_performance_log = {'text' : '```{0}```'.format(stat_report)}
   dsu.send_logs_to_slack(slack_performance_log)
 
-  return(predictions_on_test_data, lead_win_probabilities)
+  return(predictions_on_test_data, lead_win_customerbabilities)
 
 def save_model_locally_and_to_s3(best_lead_scorer, cat_dict):
   """
   Method makes model available for reference both locally on server and remotely via s3
   """
-  model_file_storage_directory = '/home/deploy/data_sci/datasets/lead_scoring/model_files/'
+  model_file_storage_directory = '/model_files/'
   model_filename = 'lead_win_pred' + str(date.today()).replace('-', '_') + '_model.joblib'
 
   full_model_filepath = model_file_storage_directory + model_filename
@@ -629,7 +554,7 @@ def save_model_locally_and_to_s3(best_lead_scorer, cat_dict):
     dsu.send_logs_to_slack(model_io_success_log_message)
 
     print('Sending model file to s3 {0}'.format(datetime.now()))
-    s3_filepath = 's3://housecall-datascience/model_output/lead_scoring/'
+    s3_filepath = 's3://.../lead_proba/'
     full_s3_path = s3_filepath + model_filename
     s3_upload_command = 'aws s3 cp {0} {1}'.format(full_model_filepath, full_s3_path)
     model_io_success_log_message = {'text' : 'Succesfully saved retrained lead scoring model to s3 at {0}'.format(datetime.now())}
@@ -646,11 +571,9 @@ def save_model_locally_and_to_s3(best_lead_scorer, cat_dict):
 """
 Actual script execution starts here
 """
+model_ready_df, known_customer_enrollments, cat_dict, fdf = all_the_data_preprocessing(categorical_feature_list, fdf, feature_column_names)
 
-# fdf = pd.read_csv('/home/deploy/data_sci/datasets/lead_scoring/lead_scoring_features20191009.csv')
-model_ready_df, known_pro_enrollments, cat_dict, fdf = all_the_data_preprocessing(categorical_feature_list, fdf, feature_column_names)
-
-gaussian_process_results_array, cross_val_results, data_train, data_train__target, data_test, data_test__target, data_eval, data_eval__target = model_param_search_and_fitting(fdf, model_ready_df, known_pro_enrollments)
+gaussian_process_results_array, cross_val_results, data_train, data_train__target, data_test, data_test__target, data_eval, data_eval__target = model_param_search_and_fitting(fdf, model_ready_df, known_customer_enrollments)
 
 log_cross_validation_results(gaussian_process_results_array, cross_val_results)
 
